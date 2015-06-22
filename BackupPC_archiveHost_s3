@@ -124,14 +124,18 @@ def verify_file(bucket, filename):
     if key:
         if key.size == stat[6]:
             fp = open(filename)
-            local_md5 = hashlib.md5(fp.read())
+            local_md5 = hashlib.md5()
+            buf = fp.read(65536)
+            while len(buf) > 0:
+                local_md5.update(buf)
+                buf = fp.read(65536)
             fp.close()
             logger.debug('verify_file: %s: local md5 "%s", etag %s', filename, local_md5.hexdigest(), key.etag)
             if '"%s"' % local_md5.hexdigest() == key.etag:
                 return True
     return False
 
-def send_file(bucket, filename):
+def send_file(bucket, filename, reduced_redundancy):
     basefilename = os.path.basename(filename)
     k = Key(bucket)
     k.key = basefilename
@@ -142,7 +146,7 @@ def send_file(bucket, filename):
             return k
         logger.warning("send_file: %s already exists on S3, overwriting", basefilename)
 
-    k.set_contents_from_filename(filename, cb=handle_progress, reduced_redundancy=True)
+    k.set_contents_from_filename(filename, cb=handle_progress, reduced_redundancy=reduced_redundancy)
 
     logger.debug("send_file: %s sent, verifying fidelity", filename)
     if not verify_file(bucket, filename):
@@ -164,7 +168,7 @@ def encryption_worker(in_q, out_q, unlink_q):
     logger.debug("encryption_worker: queue is empty, terminating after %i items in %i seconds", counter, time.time()-start_time)
     time.sleep(5)   # settle
 
-def sending_worker(in_q, out_q, accesskey, sharedkey, host):
+def sending_worker(in_q, out_q, accesskey, sharedkey, host, reduced_redundancy):
     "Sends things from the in_q using the send_file method"
     start_time = time.time()
     counter = 0
@@ -179,7 +183,7 @@ def sending_worker(in_q, out_q, accesskey, sharedkey, host):
             try:
                 logger.info("sending_worker: sending %s", filename)
                 bucket = open_s3(accesskey, sharedkey, host)
-                key = send_file(bucket, filename)
+                key = send_file(bucket, filename, reduced_redundancy)
                 key.set_acl('private')
                 key.close()
                 done = True
@@ -350,7 +354,7 @@ if __name__ == '__main__':
         p.start()
         procs.append(p)
 
-    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.accesskey, secrets.sharedkey, host))
+    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.accesskey, secrets.sharedkey, host, secrets.reduced_redundancy))
     send_p.start()
     procs.append(send_p)
 
